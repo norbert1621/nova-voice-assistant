@@ -85,6 +85,11 @@ export function useAssistantLoop() {
           break;
         }
 
+        // Give Android's audio session time to fully settle after mic teardown.
+        // Without this, AEC from the recording session can suppress the first
+        // response playback. Replay works fine because the mic is long gone by then.
+        await delay(400);
+
         setStatus('speaking');
         ForegroundService.updateText('Speaking...').catch(() => {});
         useAppStore.getState().setLastAudioUrl(audio_url);

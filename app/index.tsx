@@ -226,7 +226,7 @@ const styles = StyleSheet.create({
   textSection: {
     minHeight: 160,
     justifyContent: 'flex-start',
-    paddingBottom: 24,
+    paddingBottom: 80,
   },
   debugBar: {
     flexDirection: 'row',
