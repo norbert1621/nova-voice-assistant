@@ -1,6 +1,5 @@
-import React, { useRef, useState } from 'react';
+import React, { useRef } from 'react';
 import {
-  ActivityIndicator,
   Pressable,
   SafeAreaView,
   StyleSheet,
@@ -17,6 +16,9 @@ import { CommandDisplay } from '../src/components/CommandDisplay';
 import { MuteToggle } from '../src/components/MuteToggle';
 import { Colors } from '../src/constants/colors';
 
+const ORB_SIZE = 220;
+const REPLAY_BTN = 60;
+
 export default function HomeScreen() {
   const status = useAppStore((s) => s.status);
   const lastCommand = useAppStore((s) => s.lastCommand);
@@ -27,20 +29,21 @@ export default function HomeScreen() {
   const toggleMute = useAppStore((s) => s.toggleMute);
   const webhookMode = useSettingsStore((s) => s.webhookMode);
 
-  const [replaying, setReplaying] = useState(false);
   const replayLock = useRef(false);
 
   async function handleReplay() {
     if (replayLock.current || !lastAudioUrl) return;
     replayLock.current = true;
-    setReplaying(true);
+    useAppStore.getState().setStatus('speaking');
     try {
       await AudioService.replay(lastAudioUrl);
     } finally {
-      setReplaying(false);
       replayLock.current = false;
+      useAppStore.getState().setStatus('idle');
     }
   }
+
+  const showReplay = status === 'idle' && !!lastAudioUrl;
 
   return (
     <SafeAreaView style={styles.root}>
@@ -72,7 +75,22 @@ export default function HomeScreen() {
 
       {/* Orb + status — vertical center of the screen */}
       <View style={styles.orbSection}>
-        <Orb status={status} />
+        {/* Orb with replay button overlaid in its center */}
+        <View style={styles.orbContainer}>
+          <Orb status={status} />
+
+          {showReplay && (
+            <Pressable
+              onPress={handleReplay}
+              style={({ pressed }) => [styles.replayBtn, pressed && styles.replayBtnPressed]}
+              accessibilityLabel="Replay last response"
+              accessibilityRole="button"
+            >
+              <Text style={styles.replayIcon}>↺</Text>
+            </Pressable>
+          )}
+        </View>
+
         <View style={styles.statusGap} />
         <StatusText status={status} />
       </View>
@@ -81,22 +99,6 @@ export default function HomeScreen() {
       <View style={styles.textSection}>
         <CommandDisplay command={lastCommand} response={lastResponse} />
       </View>
-
-      {/* Replay button — only when idle and a previous response exists */}
-      {status === 'idle' && !!lastAudioUrl && (
-        <Pressable
-          onPress={handleReplay}
-          disabled={replaying}
-          style={({ pressed }) => [styles.replayBtn, (pressed || replaying) && styles.replayBtnActive]}
-          accessibilityLabel="Replay last response"
-          accessibilityRole="button"
-        >
-          {replaying
-            ? <ActivityIndicator size="small" color={Colors.purpleLight} />
-            : <Text style={styles.replayText}>↺  REPLAY</Text>
-          }
-        </Pressable>
-      )}
 
       {/* Debug: live Vosk transcript */}
       {status === 'idle' && (
@@ -125,7 +127,6 @@ const styles = StyleSheet.create({
   },
   bgGlow: {
     ...StyleSheet.absoluteFillObject,
-    // Subtle radial-ish gradient effect via a centered semi-transparent ellipse
     borderRadius: 9999,
     top: '15%',
     left: '15%',
@@ -185,6 +186,38 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingBottom: 20,
   },
+  orbContainer: {
+    width: ORB_SIZE,
+    height: ORB_SIZE,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  replayBtn: {
+    position: 'absolute',
+    width: REPLAY_BTN,
+    height: REPLAY_BTN,
+    borderRadius: REPLAY_BTN / 2,
+    backgroundColor: 'rgba(7, 7, 17, 0.72)',
+    borderWidth: 1.5,
+    borderColor: 'rgba(168, 85, 247, 0.7)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    // shadow so it lifts above the orb visually
+    shadowColor: Colors.purple,
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.6,
+    shadowRadius: 10,
+    elevation: 8,
+  },
+  replayBtnPressed: {
+    backgroundColor: 'rgba(109, 40, 217, 0.45)',
+    borderColor: 'rgba(168, 85, 247, 1)',
+  },
+  replayIcon: {
+    fontSize: 28,
+    color: '#FFFFFF',
+    lineHeight: 32,
+  },
   statusGap: {
     height: 32,
   },
@@ -192,30 +225,6 @@ const styles = StyleSheet.create({
     minHeight: 160,
     justifyContent: 'flex-start',
     paddingBottom: 24,
-  },
-  replayBtn: {
-    alignSelf: 'center',
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingVertical: 8,
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: 'rgba(168, 85, 247, 0.35)',
-    backgroundColor: 'rgba(109, 40, 217, 0.12)',
-    marginBottom: 16,
-    minWidth: 100,
-    justifyContent: 'center',
-  },
-  replayBtnActive: {
-    backgroundColor: 'rgba(109, 40, 217, 0.25)',
-    borderColor: 'rgba(168, 85, 247, 0.6)',
-  },
-  replayText: {
-    fontSize: 11,
-    fontWeight: '600',
-    letterSpacing: 2,
-    color: Colors.purpleLight,
   },
   debugBar: {
     flexDirection: 'row',

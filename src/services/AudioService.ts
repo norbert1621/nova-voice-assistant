@@ -1,5 +1,5 @@
 import { createAudioPlayer, setAudioModeAsync } from 'expo-audio';
-import type { AudioPlayer } from 'expo-audio';
+import type { AudioPlayer, AudioStatus } from 'expo-audio';
 import * as FileSystem from 'expo-file-system/legacy';
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -9,27 +9,52 @@ const CHIME_ASSET = require('../../assets/chime.mp3');
 
 /**
  * Single long-lived player reused for ALL audio: waiting music, chime, and
- * response audio.  It is NEVER removed — keeping it alive (even when muted)
- * holds Android audio focus continuously and prevents the focus-loss gap that
- * silences playback.
+ * response audio.  It is NEVER removed — keeping it alive holds Android audio
+ * focus (AUDIOFOCUS_GAIN) continuously.
  *
- * Previously, a separate chimePlayer was used for the chime.  That caused
- * Android to grant AUDIOFOCUS_GAIN to the chime player and send
- * AUDIOFOCUS_LOSS to mainPlayer, which ExoPlayer auto-pauses.  After the
- * chime released focus no player held it, so the first playUrl() had to
- * re-acquire focus from scratch — unreliable on a fresh session.
+ * Root cause of the "cuts after 1-2s" bug:
+ *   ExoPlayer releases audio focus when setMediaItem() is called and briefly
+ *   re-requests it once the new source is ready (STATE_READY).  If we call
+ *   play() immediately after replace(), audio plays from the pre-buffer for
+ *   ~1-2s while Android is still granting focus — then goes silent.
+ *
+ * Fix: stay MUTED during replace().  Poll isLoaded via playbackStatusUpdate.
+ * Only unmute + play AFTER isLoaded=true, which means ExoPlayer is in
+ * STATE_READY and has successfully re-acquired audio focus.
  */
 let mainPlayer: AudioPlayer | null = null;
 
 function getMain(): AudioPlayer {
   if (!mainPlayer) {
-    mainPlayer = createAudioPlayer(WAITING_ASSET, { updateInterval: 500 });
+    mainPlayer = createAudioPlayer(WAITING_ASSET, { updateInterval: 100 });
     mainPlayer.loop = true;
     mainPlayer.muted = true;
     mainPlayer.play(); // silent — establishes audio focus immediately
     console.log('[AudioService] mainPlayer started (silent focus holder)');
   }
   return mainPlayer;
+}
+
+/**
+ * Wait until the player's isLoaded transitions to true, which means ExoPlayer
+ * has reached STATE_READY and re-acquired audio focus after a replace() call.
+ */
+function waitForLoaded(p: AudioPlayer, timeoutMs: number): Promise<void> {
+  if (p.isLoaded) return Promise.resolve();
+  return new Promise<void>((resolve) => {
+    const timer = setTimeout(() => {
+      sub.remove();
+      console.warn('[AudioService] waitForLoaded timed out');
+      resolve();
+    }, timeoutMs);
+    const sub = p.addListener('playbackStatusUpdate', (status: AudioStatus) => {
+      if (status.isLoaded) {
+        clearTimeout(timer);
+        sub.remove();
+        resolve();
+      }
+    });
+  });
 }
 
 /** Await a single playback on mainPlayer from the current source. */
@@ -41,7 +66,7 @@ async function awaitPlayback(p: AudioPlayer, timeoutMs: number): Promise<void> {
       subRef.current = null;
       resolve();
     }, timeoutMs);
-    subRef.current = p.addListener('playbackStatusUpdate', (status) => {
+    subRef.current = p.addListener('playbackStatusUpdate', (status: AudioStatus) => {
       if (status.didJustFinish) {
         clearTimeout(timer);
         subRef.current?.remove();
@@ -67,15 +92,16 @@ export const AudioService = {
     console.log('[AudioService] startWaiting');
     const p = getMain();
     p.loop = true;
-    p.replace(WAITING_ASSET); // swap source while still holding focus
-    p.muted = false;          // unmute — waiting music becomes audible
+    p.muted = true;
+    p.replace(WAITING_ASSET);
+    await waitForLoaded(p, 3000);
+    p.muted = false;
     p.play();
   },
 
   async stopWaiting(): Promise<void> {
     if (!mainPlayer) return;
     console.log('[AudioService] stopWaiting — muting, keeping focus');
-    // Do NOT pause or remove. Just mute so audio focus stays held.
     mainPlayer.muted = true;
   },
 
@@ -83,8 +109,10 @@ export const AudioService = {
     console.log('[AudioService] playChime called');
     const p = getMain();
     p.loop = false;
-    p.muted = false;
+    p.muted = true; // stay muted while ExoPlayer swaps source + re-acquires focus
     p.replace(CHIME_ASSET);
+    await waitForLoaded(p, 3000);
+    p.muted = false;
     p.play();
     await awaitPlayback(p, 10_000);
     console.log('[AudioService] chime finished');
@@ -92,7 +120,7 @@ export const AudioService = {
     p.muted = true;
     p.loop = true;
     p.replace(WAITING_ASSET);
-    p.play(); // explicitly re-assert playing state (and focus) on mainPlayer
+    p.play(); // explicitly re-assert playing state and focus
   },
 
   async replay(url: string): Promise<void> {
@@ -118,12 +146,15 @@ export const AudioService = {
     }
 
     const p = getMain();
-    // Swap source on the SAME player (still holding focus — no gap)
-    p.loop = false;
-    p.muted = false;
-    p.replace({ uri: playUri });
 
-    // Use an object ref so TypeScript doesn't narrow the captured variable to `never`
+    // Stay MUTED while ExoPlayer swaps source and re-acquires audio focus.
+    // Only unmute after isLoaded=true — at that point focus is firmly held.
+    p.loop = false;
+    p.muted = true;
+    p.replace({ uri: playUri });
+    await waitForLoaded(p, 5000);
+    p.muted = false;
+
     const subRef = { current: null as { remove(): void } | null };
 
     try {
@@ -135,7 +166,7 @@ export const AudioService = {
           resolve();
         }, 10 * 60 * 1000);
 
-        subRef.current = p.addListener('playbackStatusUpdate', (status) => {
+        subRef.current = p.addListener('playbackStatusUpdate', (status: AudioStatus) => {
           const posMs = Math.round(status.currentTime * 1000);
           console.log(
             '[AudioService] pos:', posMs, 'ms',
