@@ -7,9 +7,14 @@ import { useSettingsStore } from '../src/store/settingsStore';
 import { AudioService } from '../src/services/AudioService';
 import { ForegroundService } from '../src/services/ForegroundService';
 import { WakeWordService } from '../src/services/WakeWordService';
+import { googleAutoService } from '../src/services/GoogleAutoService';
+import { gestureService } from '../src/services/GestureService';
+import { audioFocusService } from '../src/services/AudioFocusService';
+import { screenLockService } from '../src/services/ScreenLockService';
 
 export default function RootLayout() {
   const isInitialized = useRef(false);
+  const backgroundListening24_7 = useSettingsStore((s) => s.backgroundListening24_7);
 
   useAssistantLoop();
 
@@ -17,6 +22,64 @@ export default function RootLayout() {
     if (isInitialized.current) return;
     isInitialized.current = true;
     initializeApp();
+  }, []);
+
+  // Initialize GoogleAutoService state listener
+  useEffect(() => {
+    googleAutoService.addListener('googleAutoStateChanged', async (isActive: boolean) => {
+      console.log('[App] GoogleAuto state changed:', isActive);
+      if (isActive) {
+        await audioFocusService.requestAudioFocus();
+      } else {
+        await audioFocusService.releaseAudioFocus();
+      }
+    });
+  }, []);
+
+  // Initialize GestureService for background listening if enabled
+  useEffect(() => {
+    if (!backgroundListening24_7) return;
+
+    gestureService.registerDoubletapGesture(async (detected: boolean) => {
+      if (detected) {
+        console.log('[App] Two-finger double-tap detected');
+        // Acquire wake lock when gesture is detected
+        await screenLockService.acquireWakeLock();
+        // Trigger command capture (will be handled by useAssistantLoop)
+        // For now, just log the detection
+      }
+    });
+
+    return () => {
+      gestureService.unregisterGesture();
+    };
+  }, [backgroundListening24_7]);
+
+  // Start/stop background listening based on settings
+  useEffect(() => {
+    const unsubscribe = useSettingsStore.subscribe(
+      (state) => state.backgroundListening24_7,
+      async (backgroundListening24_7) => {
+        if (backgroundListening24_7) {
+          console.log('[App] Enabling background listening');
+          try {
+            await WakeWordService.startBackgroundListening();
+            await ForegroundService.startBackgroundListeningNotification();
+          } catch (error) {
+            console.error('[App] Failed to start background listening', error);
+          }
+        } else {
+          console.log('[App] Disabling background listening');
+          try {
+            await WakeWordService.stopBackgroundListening();
+            await ForegroundService.stopBackgroundListeningNotification();
+          } catch (error) {
+            console.error('[App] Failed to stop background listening', error);
+          }
+        }
+      }
+    );
+    return () => unsubscribe();
   }, []);
 
   return (
