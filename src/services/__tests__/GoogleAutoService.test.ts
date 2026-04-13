@@ -70,6 +70,10 @@ describe('GoogleAutoService', () => {
   });
 
   test('voice-only mode state should persist across calls', async () => {
+    // Mock isGoogleAutoActive to return true for this test
+    const { GoogleAutoModule } = require('react-native').NativeModules;
+    GoogleAutoModule.isGoogleAutoActive.mockResolvedValueOnce(true);
+
     await service.startListening();
     let voiceOnly = await service.getVoiceOnlyMode();
     expect(voiceOnly).toBe(true);
