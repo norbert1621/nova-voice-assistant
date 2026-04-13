@@ -131,6 +131,52 @@ export const AudioService = {
     p.play();
   },
 
+  /**
+   * Play confirmation sound after STT captures command
+   * Should be called when transcript is finalized but before sending to n8n
+   * Non-critical: errors are logged but not thrown
+   */
+  async playConfirmationSound(): Promise<void> {
+    try {
+      console.log('[AudioService] playConfirmationSound called');
+      const p = getMain();
+      p.loop = false;
+      p.muted = true;
+      p.replace(CHIME_ASSET); // Reuse existing chime asset for confirmation
+
+      // Play muted, wait for focus confirmed, then unmute
+      await playAndWaitForFocus(p, 3000);
+
+      // Wait for confirmation sound to finish
+      const subRef = { current: null as { remove(): void } | null };
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(() => {
+          subRef.current?.remove();
+          subRef.current = null;
+          resolve();
+        }, 10_000);
+        subRef.current = p.addListener('playbackStatusUpdate', (status: AudioStatus) => {
+          if (status.didJustFinish) {
+            clearTimeout(timer);
+            subRef.current?.remove();
+            subRef.current = null;
+            resolve();
+          }
+        });
+      });
+
+      console.log('[AudioService] confirmation sound finished');
+      // Return to silent focus-holding state
+      p.muted = true;
+      p.loop = true;
+      p.replace(WAITING_ASSET);
+      p.play();
+    } catch (error) {
+      console.warn('[AudioService] Failed to play confirmation sound', error);
+      // Non-critical error — don't throw, allow command flow to continue
+    }
+  },
+
   async replay(url: string): Promise<void> {
     console.log('[AudioService] replay:', url);
     await AudioService.playUrl(url);
