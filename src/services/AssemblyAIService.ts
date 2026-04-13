@@ -33,14 +33,25 @@ export const AssemblyAIService = {
         if (resolved) return;
         resolved = true;
         clearTimeout(timeoutTimer);
-        if (micStarted) AudioRecord.stop().catch(() => {});
-        try {
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ terminate_session: true }));
-            ws.close();
-          }
-        } catch {}
-        resolve(text.trim());
+
+        const doResolve = () => {
+          try {
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ terminate_session: true }));
+              ws.close();
+            }
+          } catch {}
+          resolve(text.trim());
+        };
+
+        if (micStarted) {
+          // Await mic stop so Android's AEC is fully disabled before playback starts.
+          // Previously this was fire-and-forget, which left the mic active during the
+          // first response playback and caused AEC to suppress audio output.
+          AudioRecord.stop().then(doResolve).catch(doResolve);
+        } else {
+          doResolve();
+        }
       };
 
       const startMic = () => {

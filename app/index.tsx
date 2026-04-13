@@ -194,6 +194,8 @@ const styles = StyleSheet.create({
   },
   replayBtn: {
     position: 'absolute',
+    top: (ORB_SIZE - REPLAY_BTN) / 2,   // vertically centered within orbContainer
+    alignSelf: 'center',                  // horizontally centered
     width: REPLAY_BTN,
     height: REPLAY_BTN,
     borderRadius: REPLAY_BTN / 2,
@@ -202,12 +204,12 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(168, 85, 247, 0.7)',
     alignItems: 'center',
     justifyContent: 'center',
-    // shadow so it lifts above the orb visually
     shadowColor: Colors.purple,
     shadowOffset: { width: 0, height: 0 },
     shadowOpacity: 0.6,
     shadowRadius: 10,
-    elevation: 8,
+    elevation: 10,
+    zIndex: 10,
   },
   replayBtnPressed: {
     backgroundColor: 'rgba(109, 40, 217, 0.45)',

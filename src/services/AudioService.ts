@@ -8,19 +8,22 @@ const WAITING_ASSET = require('../../assets/waiting.mp3');
 const CHIME_ASSET = require('../../assets/chime.mp3');
 
 /**
- * Single long-lived player reused for ALL audio: waiting music, chime, and
- * response audio.  It is NEVER removed — keeping it alive holds Android audio
- * focus (AUDIOFOCUS_GAIN) continuously.
+ * Single long-lived player reused for ALL audio.  Never removed — holds
+ * Android AUDIOFOCUS_GAIN continuously.
  *
- * Root cause of the "cuts after 1-2s" bug:
- *   ExoPlayer releases audio focus when setMediaItem() is called and briefly
- *   re-requests it once the new source is ready (STATE_READY).  If we call
- *   play() immediately after replace(), audio plays from the pre-buffer for
- *   ~1-2s while Android is still granting focus — then goes silent.
+ * The "cuts after 1-2s" bug:
+ *   ExoPlayer releases focus when setMediaItem() is called (inside replace()).
+ *   It re-requests focus only AFTER reaching STATE_READY.  If we unmute right
+ *   after replace(), audio plays from the pre-buffer for ~1-2s while Android
+ *   is still processing the focus grant — then silence.
  *
- * Fix: stay MUTED during replace().  Poll isLoaded via playbackStatusUpdate.
- * Only unmute + play AFTER isLoaded=true, which means ExoPlayer is in
- * STATE_READY and has successfully re-acquired audio focus.
+ *   isLoaded=true fires at STATE_READY, but focus may not be granted yet.
+ *   The reliable signal is status.playing=true — that fires only after
+ *   ExoPlayer has focus AND has started producing audio.
+ *
+ * Fix: call play() while still MUTED.  Wait for the first status update with
+ * playing=true — focus is now confirmed.  THEN set muted=false.  The very
+ * first audible sample is guaranteed to have audio focus.
  */
 let mainPlayer: AudioPlayer | null = null;
 
@@ -36,44 +39,34 @@ function getMain(): AudioPlayer {
 }
 
 /**
- * Wait until the player's isLoaded transitions to true, which means ExoPlayer
- * has reached STATE_READY and re-acquired audio focus after a replace() call.
+ * Start playing (muted), then unmute only once status.playing=true.
+ * This guarantees focus is held before any audible output.
  */
-function waitForLoaded(p: AudioPlayer, timeoutMs: number): Promise<void> {
-  if (p.isLoaded) return Promise.resolve();
+function playAndWaitForFocus(
+  p: AudioPlayer,
+  timeoutMs: number,
+  onFocusConfirmed?: () => void,
+): Promise<void> {
   return new Promise<void>((resolve) => {
     const timer = setTimeout(() => {
       sub.remove();
-      console.warn('[AudioService] waitForLoaded timed out');
+      console.warn('[AudioService] focus-wait timed out — unmuting anyway');
+      p.muted = false;
+      onFocusConfirmed?.();
       resolve();
     }, timeoutMs);
+
     const sub = p.addListener('playbackStatusUpdate', (status: AudioStatus) => {
-      if (status.isLoaded) {
+      if (status.playing) {
         clearTimeout(timer);
         sub.remove();
+        p.muted = false;
+        onFocusConfirmed?.();
         resolve();
       }
     });
-  });
-}
 
-/** Await a single playback on mainPlayer from the current source. */
-async function awaitPlayback(p: AudioPlayer, timeoutMs: number): Promise<void> {
-  const subRef = { current: null as { remove(): void } | null };
-  await new Promise<void>((resolve) => {
-    const timer = setTimeout(() => {
-      subRef.current?.remove();
-      subRef.current = null;
-      resolve();
-    }, timeoutMs);
-    subRef.current = p.addListener('playbackStatusUpdate', (status: AudioStatus) => {
-      if (status.didJustFinish) {
-        clearTimeout(timer);
-        subRef.current?.remove();
-        subRef.current = null;
-        resolve();
-      }
-    });
+    p.play(); // trigger focus acquisition while muted
   });
 }
 
@@ -81,9 +74,8 @@ export const AudioService = {
   async configure(): Promise<void> {
     await setAudioModeAsync({
       shouldPlayInBackground: true,
-      interruptionMode: 'doNotMix', // exclusive focus — nothing can interrupt us
+      interruptionMode: 'doNotMix',
     });
-    // Create player NOW so audio focus is claimed at startup, not on first use
     getMain();
     console.log('[AudioService] configured — audio focus claimed');
   },
@@ -94,9 +86,7 @@ export const AudioService = {
     p.loop = true;
     p.muted = true;
     p.replace(WAITING_ASSET);
-    await waitForLoaded(p, 3000);
-    p.muted = false;
-    p.play();
+    await playAndWaitForFocus(p, 3000);
   },
 
   async stopWaiting(): Promise<void> {
@@ -109,18 +99,36 @@ export const AudioService = {
     console.log('[AudioService] playChime called');
     const p = getMain();
     p.loop = false;
-    p.muted = true; // stay muted while ExoPlayer swaps source + re-acquires focus
+    p.muted = true;
     p.replace(CHIME_ASSET);
-    await waitForLoaded(p, 3000);
-    p.muted = false;
-    p.play();
-    await awaitPlayback(p, 10_000);
+
+    // Play muted, wait for focus confirmed, then unmute
+    await playAndWaitForFocus(p, 3000);
+
+    // Wait for chime to finish
+    const subRef = { current: null as { remove(): void } | null };
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(() => {
+        subRef.current?.remove();
+        subRef.current = null;
+        resolve();
+      }, 10_000);
+      subRef.current = p.addListener('playbackStatusUpdate', (status: AudioStatus) => {
+        if (status.didJustFinish) {
+          clearTimeout(timer);
+          subRef.current?.remove();
+          subRef.current = null;
+          resolve();
+        }
+      });
+    });
+
     console.log('[AudioService] chime finished');
-    // Return to silent focus-holding state so playUrl has a clean slate
+    // Return to silent focus-holding state
     p.muted = true;
     p.loop = true;
     p.replace(WAITING_ASSET);
-    p.play(); // explicitly re-assert playing state and focus
+    p.play();
   },
 
   async replay(url: string): Promise<void> {
@@ -146,14 +154,9 @@ export const AudioService = {
     }
 
     const p = getMain();
-
-    // Stay MUTED while ExoPlayer swaps source and re-acquires audio focus.
-    // Only unmute after isLoaded=true — at that point focus is firmly held.
     p.loop = false;
-    p.muted = true;
+    p.muted = true; // STAY MUTED while ExoPlayer swaps source + re-acquires focus
     p.replace({ uri: playUri });
-    await waitForLoaded(p, 5000);
-    p.muted = false;
 
     const subRef = { current: null as { remove(): void } | null };
 
@@ -166,8 +169,19 @@ export const AudioService = {
           resolve();
         }, 10 * 60 * 1000);
 
+        let focusConfirmed = false;
+
         subRef.current = p.addListener('playbackStatusUpdate', (status: AudioStatus) => {
           const posMs = Math.round(status.currentTime * 1000);
+
+          // First status.playing=true → focus is confirmed → unmute for audible output
+          if (!focusConfirmed && status.playing) {
+            focusConfirmed = true;
+            p.muted = false;
+            onBeforePlay?.();
+            console.log('[AudioService] focus confirmed — unmuting at', posMs, 'ms');
+          }
+
           console.log(
             '[AudioService] pos:', posMs, 'ms',
             '| playing:', status.playing,
@@ -180,24 +194,23 @@ export const AudioService = {
             subRef.current?.remove();
             subRef.current = null;
             resolve();
-          } else if (status.isLoaded && !status.playing && !status.didJustFinish && posMs > 0) {
+          } else if (focusConfirmed && status.isLoaded && !status.playing && !status.didJustFinish && posMs > 0) {
             console.warn('[AudioService] paused at', posMs, 'ms — resuming');
             p.play();
           }
         });
 
-        onBeforePlay?.();
+        // play() while muted — triggers ExoPlayer to request audio focus
         p.play();
       });
 
       console.log('[AudioService] ✓ playback finished');
     } finally {
       subRef.current?.remove();
-      // Return to silent focus-holding state — ready for next interaction
       p.muted = true;
       p.loop = true;
       p.replace(WAITING_ASSET);
-      p.play(); // explicitly re-assert playing state and audio focus
+      p.play();
       FileSystem.deleteAsync(localPath, { idempotent: true }).catch(() => {});
     }
   },
