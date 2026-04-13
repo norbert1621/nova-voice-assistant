@@ -153,6 +153,56 @@ export const WakeWordService = {
     partialHadWakeWord = false;
   },
 
+  /**
+   * Start background listening for wake word
+   * Keeps Vosk running even when app is in background
+   */
+  async startBackgroundListening(): Promise<void> {
+    if (!isInitialized) {
+      console.warn('[WakeWordService] Not initialized — call initialize() first');
+      return;
+    }
+    if (isListening) {
+      console.log('[WakeWordService] Already listening, skipping restart');
+      return;
+    }
+
+    try {
+      await Vosk.start({
+        grammar: [...Config.wakeWordGrammar],
+      });
+      isListening = true;
+      console.log('[WakeWordService] Background listening started');
+    } catch (error) {
+      console.error('[WakeWordService] Failed to start background listening', error);
+      isListening = false;
+    }
+  },
+
+  /**
+   * Stop background listening
+   */
+  async stopBackgroundListening(): Promise<void> {
+    if (!isListening) return;
+
+    try {
+      await Vosk.stop();
+      isListening = false;
+      lastPartial = '';
+      partialHadWakeWord = false;
+      console.log('[WakeWordService] Background listening stopped');
+    } catch (error) {
+      console.error('[WakeWordService] Failed to stop background listening', error);
+    }
+  },
+
+  /**
+   * Check if background listening is active
+   */
+  isBackgroundListeningActive(): boolean {
+    return isListening;
+  },
+
   cleanup(): void {
     resultSub?.remove();
     partialSub?.remove();
