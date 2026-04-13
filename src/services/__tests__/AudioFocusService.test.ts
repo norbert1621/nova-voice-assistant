@@ -1,4 +1,18 @@
 import { AudioFocusService } from '../AudioFocusService';
+import { NativeModules } from 'react-native';
+
+// Mock the NativeModules
+jest.mock('react-native', () => ({
+  NativeModules: {
+    AudioManager: {
+      requestAudioFocus: jest.fn().mockResolvedValue(true),
+      abandonAudioFocus: jest.fn().mockResolvedValue(true),
+    },
+  },
+  Platform: {
+    OS: 'android',
+  },
+}));
 
 describe('AudioFocusService', () => {
   let service: AudioFocusService;
